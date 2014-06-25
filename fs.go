@@ -216,7 +216,12 @@ func newFsChan(channel string) *IrcFsChan {
 
 func (root *IrcFsRoot) dispatch() {
 	for content := range root.content {
-		root.channel(content.Channel).incoming <- content.Data
+		if len(content.Channel) == 0 {
+			/* TODO empty channel => server message, dispatch differently */
+			log.Println("server msg:", content.Data)
+		} else {
+			root.channel(content.Channel).incoming <- content.Data
+		}
 	}
 }
 

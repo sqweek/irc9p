@@ -176,11 +176,28 @@ func (irc *Conn) recv(cmd *ircCmd) error {
 		if len(cmd.params) < 2 {
 			return errors.New("not enough params")
 		}
-		channel := cmd.params[0]
+		target := cmd.params[0]
 		text := cmd.params[1]
-		line := fmt.Sprintf("<%s> %s", cmd.prefix.nick, text)
-		irc.broadcast <- Content{channel, line}
-		return nil
+		switch target[0] {
+		case '#', '&', '+':
+			/* message to channel */
+			line := fmt.Sprintf("<%s> %s", cmd.prefix.nick, text)
+			irc.broadcast <- Content{target, line}
+			return nil
+		default:
+			/* message to us personally, or broadcast */
+			from := cmd.prefix.nick
+			var line string
+			if len(from) == 0 || strings.Contains(from, ".") {
+				/* no nick, message must be from the server */
+				from = ""
+				line = text
+			} else {
+				line = fmt.Sprintf("<%s> %s", from, text)
+			}
+			irc.broadcast <- Content{from, line}
+			return nil
+		}
 	case "PING":
 		irc.send <- fmt.Sprintf("PONG :\r\n")
 		
