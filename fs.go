@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/sqweek/irc9p/irc"
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
 	"strings"
@@ -140,35 +141,14 @@ func dowrite(buf *bytes.Buffer, callback func(string) error, eof bool) error {
 	}
 }
 
-
-func rdlines(data chan []byte, lines chan string) {
-	var prefix []byte
-	for {
-		buf, ok := <-data
-		if !ok {
-			if len(prefix) > 0 {
-				lines <- string(prefix)
-				close(lines)
-				return
-			}
-		}
-		for len(buf) > 0 {
-			i := bytes.IndexByte(buf, '\n')
-			if i == -1 {
-				prefix = append(prefix, buf...)
-			} else {
-				lines <- string(append(prefix, buf[:i]...))
-				prefix = prefix[:0]
-				buf = buf[i:]
-			}
-		}
-	}
-}
-
 var uid p.User
 var gid p.Group
 
-var root struct {
+type IrcFsRoot struct {
+	irc *irc.Conn
+	content chan irc.Content
+	chans map[string] *IrcFsChan
+
 	dir *srv.File
 	ctl *LineFile
 	event *LineFile
@@ -176,17 +156,18 @@ var root struct {
 	pong *LineFile
 }
 
-type ChanFiles struct {
+var root IrcFsRoot
+
+type IrcFsChan struct {
+	incoming chan string
+	name string
+
 	dir *srv.File
-	channame string
 	ctl *LineFile
 	data *LineFile
 	users *LineFile
 }
 
-/* TODO
- * - provide an open-hook to prefill read buffer
- */
 func newLineFile(name string, mode uint32, rdinit ReadInitFn, wrline WriteLineFn) *LineFile {
 	var rdaux map[*srv.Fid] *ReadAux
 	var wraux map[*srv.Fid] *bytes.Buffer
@@ -209,8 +190,9 @@ func add(parent *srv.File, children ...*LineFile) error {
 	return nil
 }
 
-func (ch ChanFiles) attach(parent *srv.File) error {
-	err := ch.dir.Add(parent, ch.channame, uid, gid, p.DMDIR|0777, nil)
+/* Adds a channel directory and ctl/data files under the given parent dir */
+func (ch *IrcFsChan) Add(parent *srv.File) error {
+	err := ch.dir.Add(parent, ch.name, uid, gid, p.DMDIR|0777, nil)
 	if err != nil {
 		return err
 	}
@@ -221,21 +203,66 @@ func (ch ChanFiles) attach(parent *srv.File) error {
 	return nil
 }
 
-func mkChanFiles(channel string) ChanFiles {
-	return ChanFiles{
-		new(srv.File),
+func newFsChan(channel string) *IrcFsChan {
+	return &IrcFsChan{
+		make(chan string),
 		channel,
+		new(srv.File),
 		newLineFile("ctl", 0222, nil, wrChanCtlFn(channel)),
 		newLineFile("data", 0666, rdChanDataFn(channel), wrChanDataFn(channel)),
 		newLineFile("users", 0444, rdChanUsersFn(channel), nil),
 	}
 }
 
+func (root *IrcFsRoot) dispatch() {
+	for content := range root.content {
+		root.channel(content.Channel).incoming <- content.Data
+	}
+}
+
+func (root *IrcFsRoot) channel(name string) *IrcFsChan {
+	c, ok := root.chans[name]
+	if !ok {
+		c = newFsChan(name)
+		c.Add(root.dir)
+		go c.chanDispatch()
+		root.chans[name] = c
+	}
+	return c
+}
+
+func (c *IrcFsChan) chanDispatch() {
+	for msg := range c.incoming {
+		log.Println(c.name, msg)
+		// TODO dispatch to any active fids
+	}
+}
+
 func wrRootCtl(line string) error {
 	cmd := strings.Fields(line)
 	switch (cmd[0]) {
+	case "connect":
+		if len(cmd) < 2 {
+			return errors.New("invalid argument")
+		}
+		if root.irc != nil {
+			return errors.New("already connected")
+		}
+		conn, err := net.Dial("tcp", cmd[1])
+		if err != nil {
+			return err
+		}
+		root.content = make(chan irc.Content)
+		go root.dispatch()
+		root.irc = irc.InitConn(conn, root.content, nil, nil)
+		/* TODO on disconnect, close(root.content) and set root.irc = nil */
+		return nil
 	case "join":
-		return mkChanFiles(cmd[1]).attach(root.dir)
+		if len(cmd) < 2 {
+			return errors.New("invalid argument")
+		}
+		root.irc.Join(cmd[1])
+		return nil
 	}
 	return errors.New("invalid argument")
 }
@@ -283,6 +310,8 @@ func main() {
 	gid = p.OsUsers.Gid2Group(os.Getegid())
 	log.Println(uid, gid)
 	root.dir = new(srv.File)
+	root.content = make(chan irc.Content)
+	root.chans = make(map[string] *IrcFsChan)
 	err := root.dir.Add(nil, "/", uid, gid, p.DMDIR|0777, nil)
 	if err != nil {
 		panic(err)
