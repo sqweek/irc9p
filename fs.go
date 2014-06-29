@@ -146,7 +146,7 @@ var gid p.Group
 
 type IrcFsRoot struct {
 	irc *irc.Conn
-	content chan irc.Content
+	messages chan irc.Event
 	chans map[string] *IrcFsChan
 
 	dir *srv.File
@@ -215,12 +215,12 @@ func newFsChan(channel string) *IrcFsChan {
 }
 
 func (root *IrcFsRoot) dispatch() {
-	for content := range root.content {
-		if len(content.Channel) == 0 {
-			/* TODO empty channel => server message, dispatch differently */
-			log.Println("server msg:", content.Data)
-		} else {
-			root.channel(content.Channel).incoming <- content.Data
+	for event := range root.messages {
+		switch event := event.(type) {
+		case *irc.ServerEvent:
+			log.Println("server msg:", event)
+		default:
+			root.channel(string(event.To())).incoming <- event.String()
 		}
 	}
 }
@@ -257,10 +257,10 @@ func wrRootCtl(line string) error {
 		if err != nil {
 			return err
 		}
-		root.content = make(chan irc.Content)
+		root.messages = make(chan irc.Event)
 		go root.dispatch()
-		root.irc = irc.InitConn(conn, root.content, nil, nil)
-		/* TODO on disconnect, close(root.content) and set root.irc = nil */
+		root.irc = irc.InitConn(conn, root.messages, nil, nil)
+		/* TODO on disconnect, close(root.messages) and set root.irc = nil */
 		return nil
 	case "join":
 		if len(cmd) < 2 {
@@ -315,7 +315,7 @@ func main() {
 	gid = p.OsUsers.Gid2Group(os.Getegid())
 	log.Println(uid, gid)
 	root.dir = new(srv.File)
-	root.content = make(chan irc.Content)
+	root.messages = make(chan irc.Event)
 	root.chans = make(map[string] *IrcFsChan)
 	err := root.dir.Add(nil, "/", uid, gid, p.DMDIR|0777, nil)
 	if err != nil {

@@ -14,17 +14,63 @@ type Conn struct {
 	send chan string
 	conn io.ReadWriter
 
-	broadcast chan Content
-	listeners map[chan Content] bool
-	//chans map[string] chan string
+	broadcast chan Event
+	listeners map[chan Event] bool
 }
 
-type Content struct {
-	Channel string
-	Data string
+type Event interface {
+	From() string
+	To() string
+	String() string
 }
+
+type Src struct {
+	src string
+}
+func (e *Src) From() string { return e.src }
+
+type Dest struct {
+	dest string
+}
+func (e *Dest) To() string { return e.dest }
+
+type ServerEvent struct {
+	Src
+	cmd string
+	text string
+}
+func (e *ServerEvent) To() string { return "" }
+func (e *ServerEvent) String() string { return strings.TrimLeft(fmt.Sprintf("%s %s %s", e.src, e.cmd, e.text), " ") }
+
+type PrivMsgEvent struct {
+	Src // user (never server/channel)
+	Dest // channel or self
+	msg string
+}
+func (e *PrivMsgEvent) String() string { return fmt.Sprintf("<%s> %s", e.src, e.msg) }
+
+type NoticeEvent struct {
+	PrivMsgEvent
+}
+
+type JoinEvent struct {
+	Src // user
+	Dest // channel
+	userinfo string
+}
+func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.src, e.userinfo, e.dest) }
+
+type PartEvent struct {
+	Src // user
+	Dest // channel
+	userinfo string
+}
+func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.src, e.userinfo, e.dest) }
 
 var reCmd *regexp.Regexp = regexp.MustCompile("[0-9][0-9][0-9]|[a-zA-Z]+")
+
+var Eunsupp = errors.New("unhandled command")
+var Eparams = errors.New("insufficient parameters")
 
 type ircPrefix struct {
 	nick string
@@ -38,8 +84,16 @@ type ircCmd struct {
 	params []string
 }
 
-func InitConn(conn io.ReadWriter, listener chan Content, nick, pass *string) *Conn {
-	irc := Conn{make(chan string), conn, make(chan Content), make(map[chan Content] bool)}
+func isToChannel(e Event) bool {
+	return len(e.To()) > 0 && strings.ContainsAny(e.To()[0:1], "#&+")
+}
+
+func isFromServer(e Event) bool {
+	return len(e.From()) == 0 || strings.Contains(e.From(), ".")
+}
+
+func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn {
+	irc := Conn{make(chan string), conn, make(chan Event), make(map[chan Event] bool)}
 	irc.Listen(listener)
 	lines := make(chan string)
 	go readlines(irc.conn, lines)
@@ -68,7 +122,7 @@ func (irc *Conn) Join(channel string) {
 	irc.send <- fmt.Sprintf("JOIN %s\r\n", channel)
 }
 
-func (irc *Conn) Listen(listener chan Content) {
+func (irc *Conn) Listen(listener chan Event) {
 	irc.listeners[listener] = true
 }
 
@@ -151,9 +205,12 @@ func (irc *Conn) parser(lines chan string) {
 			continue
 		}
 		if cmd != nil {
-			err = irc.recv(cmd)
+			event, err := irc.newEvent(cmd)
 			if err != nil {
 				log.Printf("%v: %s\n", err, line)
+			}
+			if event != nil {
+				irc.broadcast <- event
 			}
 		}
 	}
@@ -170,43 +227,43 @@ func (pre ircPrefix) Join() string {
 	return s
 }
 
-func (irc *Conn) recv(cmd *ircCmd) error {
-	switch (cmd.cmd) {
+func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
+	command := strings.ToUpper(cmd.cmd)
+	switch (command) {
 	case "PRIVMSG", "NOTICE":
 		if len(cmd.params) < 2 {
-			return errors.New("not enough params")
+			return nil, Eparams
 		}
-		target := cmd.params[0]
-		text := cmd.params[1]
-		switch target[0] {
-		case '#', '&', '+':
-			/* message to channel */
-			line := fmt.Sprintf("<%s> %s", cmd.prefix.nick, text)
-			irc.broadcast <- Content{target, line}
-			return nil
-		default:
-			/* message to us personally, or broadcast */
-			from := cmd.prefix.nick
-			var line string
-			if len(from) == 0 || strings.Contains(from, ".") {
-				/* no nick, message must be from the server */
-				from = ""
-				line = text
-			} else {
-				line = fmt.Sprintf("<%s> %s", from, text)
+		ev := PrivMsgEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.params[1]}
+		if !isToChannel(&ev) {
+			ev.dest = ""
+			if isFromServer(&ev) {
+				return &ServerEvent{Src{ev.src}, command, ev.msg}, nil
 			}
-			irc.broadcast <- Content{from, line}
-			return nil
 		}
+		if command == "PRIVMSG" {
+			return &ev, nil
+		}
+		return &NoticeEvent{ev}, nil
 	case "PING":
 		irc.send <- fmt.Sprintf("PONG :\r\n")
-		
+		return nil, nil
+	case "JOIN":
+		if len(cmd.params) < 1 {
+			return nil, Eparams
+		}
+		return &JoinEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.prefix.Join()}, nil
+	case "PART":
+		if len(cmd.params) < 1 {
+			return nil, Eparams
+		}
+		return &PartEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.prefix.Join()}, nil
 	}
 	log.Printf("'%s' '%s'\n", cmd.prefix.Join(), cmd.cmd)
 	for _, p := range cmd.params {
 		log.Printf("'%s'\n", p)
 	}
-	return errors.New("unhandled command")
+	return nil, Eunsupp
 }
 
 func (irc *Conn) sender() {
