@@ -38,9 +38,14 @@ type ServerEvent struct {
 	Src
 	cmd string
 	text string
+	ResponseCode int // -1 for non-numeric message
 }
 func (e *ServerEvent) To() string { return "" }
 func (e *ServerEvent) String() string { return strings.TrimLeft(fmt.Sprintf("%s %s %s", e.src, e.cmd, e.text), " ") }
+
+type ServerMsgEvent struct {
+	ServerEvent
+}
 
 type PrivMsgEvent struct {
 	Src // user (never server/channel)
@@ -67,6 +72,13 @@ type PartEvent struct {
 }
 func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.src, e.userinfo, e.dest) }
 
+type QuitEvent struct {
+	Src // user
+	userinfo string
+	msg string
+}
+func (e *QuitEvent) To() string { return "" }
+func (e *QuitEvent) String() string { return fmt.Sprintf("<- %s (%s) has quit IRC: %s", e.src, e.userinfo, e.msg) }
 var reCmd *regexp.Regexp = regexp.MustCompile("[0-9][0-9][0-9]|[a-zA-Z]+")
 
 var Eunsupp = errors.New("unhandled command")
@@ -84,12 +96,12 @@ type ircCmd struct {
 	params []string
 }
 
-func isToChannel(e Event) bool {
-	return len(e.To()) > 0 && strings.ContainsAny(e.To()[0:1], "#&+")
+func LooksLikeChannel(dest string) bool {
+	return len(dest) > 0 && strings.ContainsAny(dest[0:1], "#&+")
 }
 
-func isFromServer(e Event) bool {
-	return len(e.From()) == 0 || strings.Contains(e.From(), ".")
+func LooksLikeServer(src string) bool {
+	return len(src) == 0 || strings.Contains(src, ".")
 }
 
 func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn {
@@ -228,6 +240,11 @@ func (pre ircPrefix) Join() string {
 }
 
 func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
+	if len(strings.TrimLeft(cmd.cmd, "0123456789")) == 0 {
+		code := -1
+		fmt.Sscan(cmd.cmd, &code)
+		return &ServerEvent{Src{cmd.prefix.nick}, cmd.cmd, strings.Join(cmd.params, " "), code}, nil
+	}
 	command := strings.ToUpper(cmd.cmd)
 	switch (command) {
 	case "PRIVMSG", "NOTICE":
@@ -235,11 +252,11 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 			return nil, Eparams
 		}
 		ev := PrivMsgEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.params[1]}
-		if !isToChannel(&ev) {
-			ev.dest = ""
-			if isFromServer(&ev) {
-				return &ServerEvent{Src{ev.src}, command, ev.msg}, nil
+		if !LooksLikeChannel(ev.dest) {
+			if LooksLikeServer(ev.src) {
+				return &ServerMsgEvent{ServerEvent{Src{ev.src}, command, ev.msg, -1}}, nil
 			}
+			ev.dest = ""
 		}
 		if command == "PRIVMSG" {
 			return &ev, nil
@@ -258,6 +275,8 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 			return nil, Eparams
 		}
 		return &PartEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.prefix.Join()}, nil
+	case "QUIT":
+		return &QuitEvent{Src{cmd.prefix.nick}, cmd.prefix.Join(), strings.Join(cmd.params, " ")}, nil
 	}
 	log.Printf("'%s' '%s'\n", cmd.prefix.Join(), cmd.cmd)
 	for _, p := range cmd.params {

@@ -165,7 +165,7 @@ type IrcFsChan struct {
 	dir *srv.File
 	ctl *LineFile
 	data *LineFile
-	users *LineFile
+	users *LineFile // optional; can be nil
 }
 
 func newLineFile(name string, mode uint32, rdinit ReadInitFn, wrline WriteLineFn) *LineFile {
@@ -204,34 +204,46 @@ func (ch *IrcFsChan) Add(parent *srv.File) error {
 }
 
 func newFsChan(channel string) *IrcFsChan {
+	var users *LineFile = nil
+	if irc.LooksLikeChannel(channel) {
+		users = newLineFile("users", 0444, rdChanUsersFn(channel), nil)
+	}
 	return &IrcFsChan{
 		make(chan string),
 		channel,
 		new(srv.File),
 		newLineFile("ctl", 0222, nil, wrChanCtlFn(channel)),
 		newLineFile("data", 0666, rdChanDataFn(channel), wrChanDataFn(channel)),
-		newLineFile("users", 0444, rdChanUsersFn(channel), nil),
+		users,
 	}
 }
 
 func (root *IrcFsRoot) dispatch() {
 	for event := range root.messages {
 		switch event := event.(type) {
-		case *irc.ServerEvent:
+		case *irc.ServerEvent, *irc.ServerMsgEvent:
 			log.Println("server msg:", event)
+		case *irc.QuitEvent:
+			//TODO dispatch to appropriate channels
 		default:
-			root.channel(string(event.To())).incoming <- event.String()
+			channame := event.To()
+			if len(channame) == 0 {
+				channame = event.From()
+			}
+			//TODO trap illegal filename characters
+			root.channel(channame).incoming <- event.String()
 		}
 	}
 }
 
 func (root *IrcFsRoot) channel(name string) *IrcFsChan {
-	c, ok := root.chans[name]
+	key := strings.ToUpper(name)
+	c, ok := root.chans[key]
 	if !ok {
 		c = newFsChan(name)
 		c.Add(root.dir)
 		go c.chanDispatch()
-		root.chans[name] = c
+		root.chans[key] = c
 	}
 	return c
 }
