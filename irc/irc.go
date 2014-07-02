@@ -19,28 +19,26 @@ type Conn struct {
 }
 
 type Event interface {
-	From() string
-	To() string
+	/* each event is associated with a "clique". this is one of:
+	 * a) an empty string (for server-related events)
+	 * b) name of the channel this event refers to (begins with '#' '+' or '&')
+	 * c) name of the user that initiated this event */
+	Clique() string
 	String() string
 }
 
-type Src struct {
-	src string
+type Clq struct {
+	clique string
 }
-func (e *Src) From() string { return e.src }
-
-type Dest struct {
-	dest string
-}
-func (e *Dest) To() string { return e.dest }
+func (e *Clq) Clique() string { return e.clique }
 
 type ServerEvent struct {
-	Src
+	src string
 	cmd string
 	text string
 	ResponseCode int // -1 for non-numeric message
 }
-func (e *ServerEvent) To() string { return "" }
+func (e *ServerEvent) Clique() string { return "" }
 func (e *ServerEvent) String() string { return strings.TrimLeft(fmt.Sprintf("%s %s %s", e.src, e.cmd, e.text), " ") }
 
 type ServerMsgEvent struct {
@@ -48,8 +46,8 @@ type ServerMsgEvent struct {
 }
 
 type PrivMsgEvent struct {
-	Src // user (never server/channel)
-	Dest // channel or self
+	Clq
+	src string
 	msg string
 }
 func (e *PrivMsgEvent) String() string { return fmt.Sprintf("<%s> %s", e.src, e.msg) }
@@ -59,26 +57,25 @@ type NoticeEvent struct {
 }
 
 type JoinEvent struct {
-	Src // user
-	Dest // channel
+	Clq
+	nick string
 	userinfo string
 }
-func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.src, e.userinfo, e.dest) }
+func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.nick, e.userinfo, e.clique) }
 
 type PartEvent struct {
-	Src // user
-	Dest // channel
+	Clq
+	nick string
 	userinfo string
 }
-func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.src, e.userinfo, e.dest) }
+func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.nick, e.userinfo, e.clique) }
 
 type QuitEvent struct {
-	Src // user
+	Clq // nick
 	userinfo string
 	msg string
 }
-func (e *QuitEvent) To() string { return "" }
-func (e *QuitEvent) String() string { return fmt.Sprintf("<- %s (%s) has quit IRC: %s", e.src, e.userinfo, e.msg) }
+func (e *QuitEvent) String() string { return fmt.Sprintf("<- %s (%s) has quit IRC: %s", e.clique, e.userinfo, e.msg) }
 var reCmd *regexp.Regexp = regexp.MustCompile("[0-9][0-9][0-9]|[a-zA-Z]+")
 
 var Eunsupp = errors.New("unhandled command")
@@ -243,7 +240,7 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 	if len(strings.TrimLeft(cmd.cmd, "0123456789")) == 0 {
 		code := -1
 		fmt.Sscan(cmd.cmd, &code)
-		return &ServerEvent{Src{cmd.prefix.nick}, cmd.cmd, strings.Join(cmd.params, " "), code}, nil
+		return &ServerEvent{cmd.prefix.nick, cmd.cmd, strings.Join(cmd.params, " "), code}, nil
 	}
 	command := strings.ToUpper(cmd.cmd)
 	switch (command) {
@@ -251,12 +248,14 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 		if len(cmd.params) < 2 {
 			return nil, Eparams
 		}
-		ev := PrivMsgEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.params[1]}
-		if !LooksLikeChannel(ev.dest) {
-			if LooksLikeServer(ev.src) {
-				return &ServerMsgEvent{ServerEvent{Src{ev.src}, command, ev.msg, -1}}, nil
+		dest := cmd.params[0]
+		msg := cmd.params[1]
+		ev := PrivMsgEvent{Clq{dest}, cmd.prefix.nick, msg}
+		if !LooksLikeChannel(dest) {
+			if LooksLikeServer(cmd.prefix.nick) {
+				return &ServerMsgEvent{ServerEvent{cmd.prefix.nick, command, ev.msg, -1}}, nil
 			}
-			ev.dest = ""
+			ev.clique = cmd.prefix.nick
 		}
 		if command == "PRIVMSG" {
 			return &ev, nil
@@ -269,18 +268,14 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 		if len(cmd.params) < 1 {
 			return nil, Eparams
 		}
-		return &JoinEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.prefix.Join()}, nil
+		return &JoinEvent{Clq{cmd.params[0]}, cmd.prefix.nick, cmd.prefix.Join()}, nil
 	case "PART":
 		if len(cmd.params) < 1 {
 			return nil, Eparams
 		}
-		return &PartEvent{Src{cmd.prefix.nick}, Dest{cmd.params[0]}, cmd.prefix.Join()}, nil
+		return &PartEvent{Clq{cmd.params[0]}, cmd.prefix.nick, cmd.prefix.Join()}, nil
 	case "QUIT":
-		return &QuitEvent{Src{cmd.prefix.nick}, cmd.prefix.Join(), strings.Join(cmd.params, " ")}, nil
-	}
-	log.Printf("'%s' '%s'\n", cmd.prefix.Join(), cmd.cmd)
-	for _, p := range cmd.params {
-		log.Printf("'%s'\n", p)
+		return &QuitEvent{Clq{cmd.prefix.nick}, cmd.prefix.Join(), strings.Join(cmd.params, " ")}, nil
 	}
 	return nil, Eunsupp
 }

@@ -226,10 +226,7 @@ func (root *IrcFsRoot) dispatch() {
 		case *irc.QuitEvent:
 			//TODO dispatch to appropriate channels
 		default:
-			channame := event.To()
-			if len(channame) == 0 {
-				channame = event.From()
-			}
+			channame := event.Clique()
 			//TODO trap illegal filename characters
 			root.channel(channame).incoming <- event.String()
 		}
