@@ -58,17 +58,17 @@ type NoticeEvent struct {
 
 type JoinEvent struct {
 	Clq
-	nick string
+	Nick string
 	userinfo string
 }
-func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.nick, e.userinfo, e.clique) }
+func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.Nick, e.userinfo, e.clique) }
 
 type PartEvent struct {
 	Clq
-	nick string
+	Nick string
 	userinfo string
 }
-func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.nick, e.userinfo, e.clique) }
+func (e *PartEvent) String() string { return fmt.Sprintf("<- %s (%s) has left %s", e.Nick, e.userinfo, e.clique) }
 
 type QuitEvent struct {
 	Clq // nick

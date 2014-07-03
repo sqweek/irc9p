@@ -61,7 +61,11 @@ func (f *LineFile) FidDestroy(fid *srv.FFid) {
 }
 
 func (f *LineFile) Clunk(fid *srv.FFid) error {
-	delete(f.rdaux, fid.Fid)
+	rdaux, ok := f.rdaux[fid.Fid]
+	if ok {
+		delete(f.rdaux, fid.Fid)
+		close(rdaux.lines)
+	}
 	buf, ok := f.wraux[fid.Fid]
 	if ok && buf.Len() > 0 {
 		err := dowrite(buf, f.wrline, true)
@@ -92,12 +96,13 @@ func (f *LineFile) Read(fid *srv.FFid, data []byte, offset uint64) (int, error) 
 	line, ok := <-rdaux.lines
 	if !ok {
 		return n, nil
-	} else if n + len(line) > len(data) {
+	} else if n + len(line) + 1 > len(data) {
 		rdaux.buf.WriteString(line)
+		rdaux.buf.Write([]byte{'\n'})
 		n2, _ := rdaux.buf.Read(data[n:])
 		return n + n2, nil
 	} else {
-		n2 := copy(data[n:], line)
+		n2 := copy(data[n:], line + "\n")
 		return n + n2, nil
 	}
 }
@@ -248,7 +253,9 @@ func (root *IrcFsRoot) channel(name string) *IrcFsChan {
 func (c *IrcFsChan) chanDispatch() {
 	for msg := range c.incoming {
 		log.Println(c.name, msg)
-		// TODO dispatch to any active fids
+		for _, aux := range(c.data.rdaux) {
+			aux.lines <- msg
+		}
 	}
 }
 
@@ -281,13 +288,14 @@ func wrRootCtl(line string) error {
 	return errors.New("invalid argument")
 }
 
-func rdRootEvent() *ReadAux {
+func rdRootEvent() *ReadAux { /* TODO */
 	return NewReadAux("", nil)
 }
 
 func rdRootNick() *ReadAux {
 	c := make(chan string)
 	close(c)
+	/* FIXME should reflect actual nick xD */
 	return NewReadAux("sqweek", c)
 }
 
@@ -295,7 +303,7 @@ func rdRootPong() *ReadAux {
 	return NewReadAux("", nil)
 }
 
-func wrChanCtlFn(channel string) WriteLineFn {
+func wrChanCtlFn(channel string) WriteLineFn { /* TODO */
 	return func(line string) error {
 		return nil
 	}
@@ -303,13 +311,18 @@ func wrChanCtlFn(channel string) WriteLineFn {
 
 func wrChanDataFn(channel string) WriteLineFn {
 	return func(line string) error {
+		irc := root.irc
+		if irc == nil {
+			return errors.New("not connected")
+		}
+		irc.PrivMsg(channel, line)
 		return nil
 	}
 }
 
 func rdChanDataFn(channel string) ReadInitFn {
 	return func() *ReadAux {
-		return NewReadAux("", nil)
+		return NewReadAux("", make(chan string))
 	}
 }
 
