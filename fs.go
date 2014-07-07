@@ -4,9 +4,11 @@ import (
 	"github.com/sqweek/irc9p/irc"
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
+	"crypto/tls"
 	"strings"
 	"bytes"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os/signal"
@@ -64,7 +66,9 @@ func (f *LineFile) Clunk(fid *srv.FFid) error {
 	rdaux, ok := f.rdaux[fid.Fid]
 	if ok {
 		delete(f.rdaux, fid.Fid)
-		close(rdaux.lines)
+		if rdaux.lines != nil {
+			close(rdaux.lines)
+		}
 	}
 	buf, ok := f.wraux[fid.Fid]
 	if ok && buf.Len() > 0 {
@@ -92,6 +96,9 @@ func (f *LineFile) Read(fid *srv.FFid, data []byte, offset uint64) (int, error) 
 		if n == len(data) {
 			return n, nil
 		}
+	}
+	if rdaux.lines == nil {
+		return n, nil
 	}
 	line, ok := <-rdaux.lines
 	if !ok {
@@ -154,6 +161,12 @@ type IrcFsRoot struct {
 	messages chan irc.Event
 	chans map[string] *IrcFsChan
 
+	state struct {
+		host string	
+		port int
+		ssl bool
+	}
+
 	dir *srv.File
 	ctl *LineFile
 	event *LineFile
@@ -187,6 +200,9 @@ func newLineFile(name string, mode uint32, rdinit ReadInitFn, wrline WriteLineFn
 
 func add(parent *srv.File, children ...*LineFile) error {
 	for _, child := range(children) {
+		if child == nil {
+			continue
+		}
 		err := child.Add(parent, child.name, uid, gid, child.mode, child)
 		if err != nil {
 			return err
@@ -254,38 +270,115 @@ func (c *IrcFsChan) chanDispatch() {
 	for msg := range c.incoming {
 		log.Println(c.name, msg)
 		for _, aux := range(c.data.rdaux) {
-			aux.lines <- msg
+			if aux.lines != nil {
+				aux.lines <- msg
+			}
 		}
 	}
 }
 
+func (root *IrcFsRoot) dial() (net.Conn, error) {
+	if len(root.state.host) == 0 {
+		return nil, errors.New("no server specified")
+	}
+	port := root.state.port
+	if port == 0 {
+		if root.state.ssl {
+			port = 6697
+		} else {
+			port = 6667
+		}
+	}
+	addr := fmt.Sprintf("%s:%d", root.state.host, port)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if root.state.ssl {
+		conf := tls.Config{InsecureSkipVerify: true}
+		return tls.Client(conn, &conf), nil
+	}
+	return conn, nil
+}
+
+var Einval = errors.New("invalid argument")
+var Econnected = errors.New("already connected")
+var Edisconnected = errors.New("not connected")
+
 func wrRootCtl(line string) error {
+	if line[0] == '#' {
+		return nil
+	}
 	cmd := strings.Fields(line)
 	switch (cmd[0]) {
 	case "connect":
-		if len(cmd) < 2 {
-			return errors.New("invalid argument")
-		}
 		if root.irc != nil {
-			return errors.New("already connected")
+			return Econnected
 		}
-		conn, err := net.Dial("tcp", cmd[1])
+		conn, err := root.dial()
 		if err != nil {
 			return err
 		}
 		root.messages = make(chan irc.Event)
 		go root.dispatch()
-		root.irc = irc.InitConn(conn, root.messages, nil, nil)
+		nick := "sqweek" // FIXME hardcoded nick
+		root.irc = irc.InitConn(conn, root.messages, &nick, nil)
 		/* TODO on disconnect, close(root.messages) and set root.irc = nil */
 		return nil
 	case "join":
 		if len(cmd) < 2 {
-			return errors.New("invalid argument")
+			return Einval
+		}
+		if root.irc == nil {
+			return Edisconnected
 		}
 		root.irc.Join(cmd[1])
 		return nil
+	case "server":
+		if len(cmd) < 2 {
+			return Einval
+		}
+		root.state.host = cmd[1]
+		return nil
+	case "port":
+		if len(cmd) < 2 || len(strings.TrimLeft(cmd[1], "0123456789")) > 0 {
+			return Einval
+		}
+		fmt.Sscan(cmd[1], &root.state.port)
+		return nil
+	case "ssl":
+		if len(cmd) < 2 {
+			return Einval
+		}
+		switch cmd[1] {
+		case "on", "yes":
+			root.state.ssl = true
+		case "off", "no":
+			root.state.ssl = false
+		default:
+			return Einval
+		}
+		return nil
 	}
-	return errors.New("invalid argument")
+	return Einval
+}
+
+func rdRootCtl() *ReadAux {
+	var buf string
+	if len(root.state.host) == 0 {
+		buf += "#"
+	}
+	buf += fmt.Sprintf("server %s\n", root.state.host)
+	if root.state.port == 0 {
+		buf += "#"
+	}
+	buf += fmt.Sprintf("port %d\n", root.state.port)
+	if root.state.ssl {
+		buf += "ssl on\n"
+	} else {
+		buf += "#ssl off\n"
+	}
+	return NewReadAux(buf, nil)
 }
 
 func rdRootEvent() *ReadAux { /* TODO */
@@ -293,10 +386,8 @@ func rdRootEvent() *ReadAux { /* TODO */
 }
 
 func rdRootNick() *ReadAux {
-	c := make(chan string)
-	close(c)
 	/* FIXME should reflect actual nick xD */
-	return NewReadAux("sqweek", c)
+	return NewReadAux("sqweek", nil)
 }
 
 func rdRootPong() *ReadAux {
@@ -343,7 +434,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	root.ctl = newLineFile("ctl", 0222, nil, wrRootCtl)
+	root.ctl = newLineFile("ctl", 0666, rdRootCtl, wrRootCtl)
 	root.event = newLineFile("event", 0444, rdRootEvent, nil)
 	root.nick = newLineFile("nick", 0444, rdRootNick, nil)
 	root.pong = newLineFile("pong", 0444, rdRootPong, nil)

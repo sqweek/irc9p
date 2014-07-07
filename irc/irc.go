@@ -13,6 +13,7 @@ import (
 type Conn struct {
 	send chan string
 	conn io.ReadWriter
+	nick string // the actual nick; may be different from requested nick
 
 	broadcast chan Event
 	listeners map[chan Event] bool
@@ -102,7 +103,7 @@ func LooksLikeServer(src string) bool {
 }
 
 func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn {
-	irc := Conn{make(chan string), conn, make(chan Event), make(map[chan Event] bool)}
+	irc := Conn{make(chan string), conn, "", make(chan Event), make(map[chan Event] bool)}
 	irc.Listen(listener)
 	lines := make(chan string)
 	go readlines(irc.conn, lines)
