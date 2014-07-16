@@ -120,12 +120,14 @@ func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn
 		n = *nick
 	}
 	irc.send <- fmt.Sprintf("NICK %s\r\n", n)
+	irc.nick = n
 	irc.send <- fmt.Sprintf("USER %s 0 0 :%s\r\n", n, n)
 	return &irc
 }
 
 func (irc *Conn) PrivMsg(channel, msg string) {
 	irc.send <- fmt.Sprintf("PRIVMSG %s :%s\r\n", channel, msg)
+	irc.broadcast <- &PrivMsgEvent{Clq{channel}, irc.nick, msg}
 }
 
 func (irc *Conn) Join(channel string) {

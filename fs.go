@@ -146,7 +146,7 @@ func dowrite(buf *bytes.Buffer, callback func(string) error, eof bool) error {
 			}
 			return nil
 		}
-		err = callback(line)
+		err = callback(strings.TrimRight(line, "\r\n"))
 		if err != nil {
 			return err
 		}
