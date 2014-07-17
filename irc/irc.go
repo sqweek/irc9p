@@ -102,7 +102,7 @@ func LooksLikeServer(src string) bool {
 	return len(src) == 0 || strings.Contains(src, ".")
 }
 
-func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn {
+func InitConn(conn io.ReadWriter, listener chan Event, nick string, pass *string) *Conn {
 	irc := Conn{make(chan string), conn, "", make(chan Event), make(map[chan Event] bool)}
 	irc.Listen(listener)
 	lines := make(chan string)
@@ -113,15 +113,12 @@ func InitConn(conn io.ReadWriter, listener chan Event, nick, pass *string) *Conn
 	if pass != nil {
 		irc.send <- fmt.Sprintf("PASS %s\r\n", *pass)
 	}
-	var n string
-	if nick == nil {
-		n = "irc9p-guest"
-	} else {
-		n = *nick
+	if len(nick) == 0 {
+		nick = "irc9p-guest"
 	}
-	irc.send <- fmt.Sprintf("NICK %s\r\n", n)
-	irc.nick = n
-	irc.send <- fmt.Sprintf("USER %s 0 0 :%s\r\n", n, n)
+	irc.send <- fmt.Sprintf("NICK %s\r\n", nick)
+	irc.nick = nick
+	irc.send <- fmt.Sprintf("USER %s 0 0 :%s\r\n", nick, nick)
 	return &irc
 }
 

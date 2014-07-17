@@ -5,6 +5,7 @@ import (
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
 	"crypto/tls"
+	"strconv"
 	"strings"
 	"bytes"
 	"errors"
@@ -165,6 +166,7 @@ type IrcFsRoot struct {
 		host string	
 		port int
 		ssl bool
+		nick string /* nick requested by user */
 	}
 
 	dir *srv.File
@@ -310,55 +312,56 @@ func wrRootCtl(line string) error {
 		return nil
 	}
 	cmd := strings.Fields(line)
-	switch (cmd[0]) {
-	case "connect":
-		if root.irc != nil {
-			return Econnected
+	switch len(cmd) {
+	case 1:
+		/* commands with no arguments */
+		switch cmd[0] {
+		case "connect":
+			if root.irc != nil {
+				return Econnected
+			}
+			conn, err := root.dial()
+			if err != nil {
+				return err
+			}
+			root.messages = make(chan irc.Event)
+			go root.dispatch()
+			root.irc = irc.InitConn(conn, root.messages, root.state.nick, nil)
+			/* TODO on disconnect, close(root.messages) and set root.irc = nil */
+			return nil
 		}
-		conn, err := root.dial()
-		if err != nil {
-			return err
+	case 2:
+		/* commands with one argument */
+		switch cmd[0] {
+		case "join":
+			if root.irc == nil {
+				return Edisconnected
+			}
+			root.irc.Join(cmd[1])
+			return nil
+		case "server":
+			root.state.host = cmd[1]
+			return nil
+		case "port":
+			if len(strings.TrimLeft(cmd[1], "0123456789")) > 0 {
+				return Einval
+			}
+			root.state.port, _ = strconv.Atoi(cmd[1])
+			return nil
+		case "ssl":
+			switch cmd[1] {
+			case "on", "yes":
+				root.state.ssl = true
+			case "off", "no":
+				root.state.ssl = false
+			default:
+				return Einval
+			}
+			return nil
+		case "nick":
+			root.state.nick = cmd[1]
+			return nil
 		}
-		root.messages = make(chan irc.Event)
-		go root.dispatch()
-		nick := "sqweek" // FIXME hardcoded nick
-		root.irc = irc.InitConn(conn, root.messages, &nick, nil)
-		/* TODO on disconnect, close(root.messages) and set root.irc = nil */
-		return nil
-	case "join":
-		if len(cmd) < 2 {
-			return Einval
-		}
-		if root.irc == nil {
-			return Edisconnected
-		}
-		root.irc.Join(cmd[1])
-		return nil
-	case "server":
-		if len(cmd) < 2 {
-			return Einval
-		}
-		root.state.host = cmd[1]
-		return nil
-	case "port":
-		if len(cmd) < 2 || len(strings.TrimLeft(cmd[1], "0123456789")) > 0 {
-			return Einval
-		}
-		fmt.Sscan(cmd[1], &root.state.port)
-		return nil
-	case "ssl":
-		if len(cmd) < 2 {
-			return Einval
-		}
-		switch cmd[1] {
-		case "on", "yes":
-			root.state.ssl = true
-		case "off", "no":
-			root.state.ssl = false
-		default:
-			return Einval
-		}
-		return nil
 	}
 	return Einval
 }
@@ -378,6 +381,7 @@ func rdRootCtl() *ReadAux {
 	} else {
 		buf += "#ssl off\n"
 	}
+	buf += fmt.Sprintf("nick %s\n", root.state.nick)
 	return NewReadAux(buf, nil)
 }
 
@@ -386,8 +390,8 @@ func rdRootEvent() *ReadAux { /* TODO */
 }
 
 func rdRootNick() *ReadAux {
-	/* FIXME should reflect actual nick xD */
-	return NewReadAux("sqweek", nil)
+	/* FIXME should reflect actual nick */
+	return NewReadAux(root.state.nick, nil)
 }
 
 func rdRootPong() *ReadAux {
