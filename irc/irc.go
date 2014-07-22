@@ -88,6 +88,13 @@ type QuitEvent struct {
 	msg string
 }
 func (e *QuitEvent) String() string { return fmt.Sprintf("<- %s (%s) has quit IRC: %s", e.clique, e.userinfo, e.msg) }
+
+type TopicEvent struct {
+	Clq
+	Topic string
+}
+func (e *TopicEvent) String() string { return "== " + e.Topic + " ==" }
+
 var reCmd *regexp.Regexp = regexp.MustCompile("[0-9][0-9][0-9]|[a-zA-Z]+")
 
 var Eunsupp = errors.New("unhandled command")
@@ -103,6 +110,13 @@ type ircCmd struct {
 	prefix ircPrefix
 	cmd string
 	params []string
+}
+
+func (cmd *ircCmd) Param(i int, dflt string) string {
+	if i >= 0 && i < len(cmd.params) {
+		return cmd.params[i]
+	}
+	return dflt
 }
 
 func LooksLikeChannel(dest string) bool {
@@ -260,6 +274,12 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 		code, _ := strconv.Atoi(cmd.cmd)
 		n := len(cmd.params)
 		switch code {
+		case 332:
+			channel, topic := cmd.Param(1, ""), cmd.Param(2, "")
+			if len(channel) == 0 {
+				return nil, Eunsupp
+			}
+			return &TopicEvent{Clq{channel}, topic}, nil
 		case 353:
 			if n < 2 {
 				return nil, Eunsupp
