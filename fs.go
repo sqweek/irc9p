@@ -308,11 +308,13 @@ var Econnected = errors.New("already connected")
 var Edisconnected = errors.New("not connected")
 
 func wrRootCtl(line string) error {
-	if line[0] == '#' {
+	if len(line) == 0 || line[0] == '#' {
 		return nil
 	}
 	cmd := strings.Fields(line)
 	switch len(cmd) {
+	case 0:
+		return nil /* ignore empty lines */
 	case 1:
 		/* commands with no arguments */
 		switch cmd[0] {

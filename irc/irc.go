@@ -2,6 +2,7 @@ package irc
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 	"errors"
 	"bufio"
@@ -17,6 +18,10 @@ type Conn struct {
 
 	broadcast chan Event
 	listeners map[chan Event] bool
+
+	tmp struct {
+		names map[string] []string
+	}
 }
 
 type Event interface {
@@ -64,6 +69,12 @@ type JoinEvent struct {
 }
 func (e *JoinEvent) String() string { return fmt.Sprintf("-> %s (%s) has joined %s", e.Nick, e.userinfo, e.clique) }
 
+type NamesEvent struct {
+	Clq
+	Names []string
+}
+func (e *NamesEvent) String() string { return "[" + strings.Join(e.Names, " ") + "]" }
+
 type PartEvent struct {
 	Clq
 	Nick string
@@ -103,7 +114,8 @@ func LooksLikeServer(src string) bool {
 }
 
 func InitConn(conn io.ReadWriter, listener chan Event, nick string, pass *string) *Conn {
-	irc := Conn{make(chan string), conn, "", make(chan Event), make(map[chan Event] bool)}
+	irc := Conn{send: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
+	irc.tmp.names = make(map[string] []string)
 	irc.Listen(listener)
 	lines := make(chan string)
 	go readlines(irc.conn, lines)
@@ -129,6 +141,13 @@ func (irc *Conn) PrivMsg(channel, msg string) {
 
 func (irc *Conn) Join(channel string) {
 	irc.send <- fmt.Sprintf("JOIN %s\r\n", channel)
+}
+
+func (irc *Conn) Part(channel string) {
+	if !LooksLikeChannel(channel) {
+		return
+	}
+	irc.send <- fmt.Sprintf("PART %s\r\n", channel)
 }
 
 func (irc *Conn) Listen(listener chan Event) {
@@ -238,8 +257,26 @@ func (pre ircPrefix) Join() string {
 
 func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 	if len(strings.TrimLeft(cmd.cmd, "0123456789")) == 0 {
-		code := -1
-		fmt.Sscan(cmd.cmd, &code)
+		code, _ := strconv.Atoi(cmd.cmd)
+		n := len(cmd.params)
+		switch code {
+		case 353:
+			if n < 2 {
+				return nil, Eunsupp
+			}
+			channel := cmd.params[n - 2]
+			names := irc.tmp.names[channel]
+			irc.tmp.names[channel] = append(names, strings.Fields(cmd.params[n - 1])...)
+			return nil, nil
+		case 366:
+			if n < 2 {
+				return nil, Eunsupp
+			}
+			channel := cmd.params[1]
+			names := irc.tmp.names[channel]
+			irc.tmp.names[channel] = nil
+			return &NamesEvent{Clq{channel}, names}, nil
+		}
 		return &ServerEvent{cmd.prefix.nick, cmd.cmd, strings.Join(cmd.params, " "), code}, nil
 	}
 	command := strings.ToUpper(cmd.cmd)
