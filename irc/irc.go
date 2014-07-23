@@ -75,6 +75,12 @@ type NamesEvent struct {
 }
 func (e *NamesEvent) String() string { return "[" + strings.Join(e.Names, " ") + "]" }
 
+type NickEvent struct {
+	Clq // original nick
+	NewNick string
+}
+func (e *NickEvent) String() string { return fmt.Sprintf("! %s is now known as %s", e.clique, e.NewNick) }
+
 type PartEvent struct {
 	Clq
 	Nick string
@@ -333,6 +339,11 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 			return nil, Eparams
 		}
 		return &PartEvent{Clq{cmd.params[0]}, cmd.prefix.nick, cmd.prefix.Join()}, nil
+	case "NICK":
+		if len(cmd.params) < 1 {
+			return nil, Eparams
+		}
+		return &NickEvent{Clq{cmd.prefix.nick}, cmd.params[0]}, nil
 	case "QUIT":
 		return &QuitEvent{Clq{cmd.prefix.nick}, cmd.prefix.Join(), strings.Join(cmd.params, " ")}, nil
 	}

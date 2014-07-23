@@ -315,6 +315,14 @@ func (root *IrcFsRoot) dispatch() {
 					ircChan.incoming <- event.String()
 				}
 			}
+		case *irc.NickEvent:
+			for _, ircChan := range root.chans {
+				if ircChan.HasNick(event.Clique()) {
+					ircChan.Parted(event.Clique())
+					ircChan.Joined(event.NewNick)
+					ircChan.incoming <- event.String()
+				}
+			}
 		case *irc.PartEvent:
 			ircChan := root.channel(event.Clique())
 			ircChan.Parted(event.Nick)
