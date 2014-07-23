@@ -127,10 +127,12 @@ func LooksLikeServer(src string) bool {
 	return len(src) == 0 || strings.Contains(src, ".")
 }
 
-func InitConn(conn io.ReadWriter, listener chan Event, nick string, pass *string) *Conn {
+func InitConn(conn io.ReadWriter, nick string, pass *string, listeners ...chan Event) *Conn {
 	irc := Conn{send: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
 	irc.tmp.names = make(map[string] []string)
-	irc.Listen(listener)
+	for _, listener := range listeners {
+		irc.Listen(listener)
+	}
 	lines := make(chan string)
 	go readlines(irc.conn, lines)
 	go irc.parser(lines)

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"bytes"
 	"errors"
+	"time"
 	"fmt"
 	"log"
 	"net"
@@ -157,10 +158,40 @@ func dowrite(buf *bytes.Buffer, callback func(string) error, eof bool) error {
 var uid p.User
 var gid p.Group
 
+type IrcLogger struct {
+	dir string
+	fd map[string] io.WriteCloser
+}
+
+func (logger *IrcLogger) Log(channel, content string) {
+	var err error
+	tstamp := time.Now().In(time.UTC).Format("2006-01-02 15:04:05")
+	fd, ok := logger.fd[channel]
+	if !ok {
+		fd, err = os.OpenFile(logger.dir + "/" + channel + ".log", os.O_WRONLY | os.O_APPEND | os.O_CREATE, 0644)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "open failed: ", err)
+			return
+		}
+		logger.fd[channel] = fd
+	}
+	fmt.Fprintln(fd, tstamp, content)
+}
+
+func (logger *IrcLogger) Close(channel string) {
+	fd, ok := logger.fd[channel]
+	if ok {
+		fd.Close()
+		delete(logger.fd, channel)
+	}
+}
+
 type IrcFsRoot struct {
 	irc *irc.Conn
 	messages chan irc.Event
 	chans map[string] *IrcFsChan
+
+	logger IrcLogger
 
 	state struct {
 		host string	
@@ -250,6 +281,9 @@ func (root *IrcFsRoot) dispatch() {
 			//TODO dispatch to appropriate channels
 		default:
 			channame := event.Clique()
+			if len(root.logger.dir) > 0 {
+				root.logger.Log(channame, event.String())
+			}
 			//TODO trap illegal filename characters
 			root.channel(channame).incoming <- event.String()
 		}
@@ -270,7 +304,9 @@ func (root *IrcFsRoot) channel(name string) *IrcFsChan {
 
 func (c *IrcFsChan) chanDispatch() {
 	for msg := range c.incoming {
+		tstamp := time.Now().Format("15:04:05")
 		log.Println(c.name, msg)
+		msg = fmt.Sprintf("%s %s", tstamp, msg)
 		for _, aux := range(c.data.rdaux) {
 			if aux.lines != nil {
 				aux.lines <- msg
@@ -328,7 +364,7 @@ func wrRootCtl(line string) error {
 			}
 			root.messages = make(chan irc.Event)
 			go root.dispatch()
-			root.irc = irc.InitConn(conn, root.messages, root.state.nick, nil)
+			root.irc = irc.InitConn(conn, root.state.nick, nil, root.messages)
 			/* TODO on disconnect, close(root.messages) and set root.irc = nil */
 			return nil
 		}
@@ -363,6 +399,14 @@ func wrRootCtl(line string) error {
 		case "nick":
 			root.state.nick = cmd[1]
 			return nil
+		case "logdir":
+			/* confirm directory exists */
+			_, err := os.Stat(cmd[1])
+			if err != nil {
+				return err
+			}
+			root.logger.dir = cmd[1]
+			return nil
 		}
 	}
 	return Einval
@@ -383,6 +427,10 @@ func rdRootCtl() *ReadAux {
 	} else {
 		buf += "#ssl off\n"
 	}
+	if len(root.logger.dir) == 0 {
+		buf += "#"
+	}
+	buf += fmt.Sprintf("logdir %s\n", root.logger.dir)
 	buf += fmt.Sprintf("nick %s\n", root.state.nick)
 	return NewReadAux(buf, nil)
 }
@@ -436,14 +484,15 @@ func main() {
 	root.dir = new(srv.File)
 	root.messages = make(chan irc.Event)
 	root.chans = make(map[string] *IrcFsChan)
-	err := root.dir.Add(nil, "/", uid, gid, p.DMDIR|0777, nil)
-	if err != nil {
-		panic(err)
-	}
 	root.ctl = newLineFile("ctl", 0666, rdRootCtl, wrRootCtl)
 	root.event = newLineFile("event", 0444, rdRootEvent, nil)
 	root.nick = newLineFile("nick", 0444, rdRootNick, nil)
 	root.pong = newLineFile("pong", 0444, rdRootPong, nil)
+	root.logger.fd = make(map[string] io.WriteCloser)
+	err := root.dir.Add(nil, "/", uid, gid, p.DMDIR|0777, nil)
+	if err != nil {
+		panic(err)
+	}
 	err = add(root.dir, root.ctl, root.event, root.nick, root.pong)
 	if err != nil {
 		panic(err)
