@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"os/signal"
 	"syscall"
 	"os"
@@ -212,11 +213,35 @@ var root IrcFsRoot
 type IrcFsChan struct {
 	incoming chan string
 	name string
+	users []string
 
 	dir *srv.File
 	ctl *LineFile
 	data *LineFile
-	users *LineFile // optional; can be nil
+	userfile *LineFile // optional; can be nil
+}
+
+func (c *IrcFsChan) HasNick(nick string) bool {
+	i := sort.SearchStrings(c.users, nick)
+	return i == len(c.users) || c.users[i] == nick
+}
+
+func (c *IrcFsChan) Joined(nick string) {
+	i := sort.SearchStrings(c.users, nick)
+	if i < len(c.users) && c.users[i] == nick {
+		return
+	}
+	c.users = append(c.users, "")
+	copy(c.users[i + 1:], c.users[i:])
+	c.users[i] = nick
+}
+
+func (c *IrcFsChan) Parted(nick string) {
+	i := sort.SearchStrings(c.users, nick)
+	if i == len(c.users) || c.users[i] != nick {
+		return
+	}
+	c.users = append(c.users[:i], c.users[i + 1:]...)
 }
 
 func newLineFile(name string, mode uint32, rdinit ReadInitFn, wrline WriteLineFn) *LineFile {
@@ -250,7 +275,7 @@ func (ch *IrcFsChan) Add(parent *srv.File) error {
 	if err != nil {
 		return err
 	}
-	err = add(ch.dir, ch.ctl, ch.data, ch.users)
+	err = add(ch.dir, ch.ctl, ch.data, ch.userfile)
 	if err != nil {
 		return err
 	}
@@ -265,6 +290,7 @@ func newFsChan(channel string) *IrcFsChan {
 	return &IrcFsChan{
 		make(chan string),
 		channel,
+		make([]string, 0, 32),
 		new(srv.File),
 		newLineFile("ctl", 0222, nil, wrChanCtlFn(channel)),
 		newLineFile("data", 0666, rdChanDataFn(channel), wrChanDataFn(channel)),
@@ -277,13 +303,28 @@ func (root *IrcFsRoot) dispatch() {
 		switch event := event.(type) {
 		case *irc.ServerEvent, *irc.ServerMsgEvent:
 			log.Println("server msg:", event)
+		case *irc.NamesEvent:
+			ircChan := root.channel(event.Clique())
+			ircChan.users = event.Names
+			sort.Strings(ircChan.users)
+			ircChan.incoming <- event.String()
 		case *irc.QuitEvent:
-			//TODO dispatch to appropriate channels
+			for _, ircChan := range root.chans {
+				if ircChan.HasNick(event.Clique()) {
+					ircChan.Parted(event.Clique())
+					ircChan.incoming <- event.String()
+				}
+			}
+		case *irc.PartEvent:
+			ircChan := root.channel(event.Clique())
+			ircChan.Parted(event.Nick)
+			ircChan.incoming <- event.String()
+		case *irc.JoinEvent:
+			ircChan := root.channel(event.Clique())
+			ircChan.Joined(event.Nick)
+			ircChan.incoming <- event.String()
 		default:
 			channame := event.Clique()
-			if len(root.logger.dir) > 0 {
-				root.logger.Log(channame, event.String())
-			}
 			//TODO trap illegal filename characters
 			root.channel(channame).incoming <- event.String()
 		}
@@ -305,6 +346,9 @@ func (root *IrcFsRoot) channel(name string) *IrcFsChan {
 func (c *IrcFsChan) chanDispatch() {
 	for msg := range c.incoming {
 		tstamp := time.Now().Format("15:04:05")
+		if len(root.logger.dir) > 0 {
+			root.logger.Log(c.name, msg)
+		}
 		log.Println(c.name, msg)
 		msg = fmt.Sprintf("%s %s", tstamp, msg)
 		for _, aux := range(c.data.rdaux) {
@@ -473,7 +517,7 @@ func rdChanDataFn(channel string) ReadInitFn {
 
 func rdChanUsersFn(channel string) ReadInitFn {
 	return func() *ReadAux {
-		return NewReadAux("", nil)
+		return NewReadAux(strings.Join(root.channel(channel).users, "\n") + "\n", nil)
 	}
 }
 
