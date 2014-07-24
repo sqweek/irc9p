@@ -271,7 +271,7 @@ func add(parent *srv.File, children ...*LineFile) error {
 
 /* Adds a channel directory and ctl/data files under the given parent dir */
 func (ch *IrcFsChan) Add(parent *srv.File) error {
-	err := ch.dir.Add(parent, ch.name, uid, gid, p.DMDIR|0777, nil)
+	err := ch.dir.Add(parent, fsName(ch.name), uid, gid, p.DMDIR|0777, nil)
 	if err != nil {
 		return err
 	}
@@ -333,10 +333,19 @@ func (root *IrcFsRoot) dispatch() {
 			ircChan.incoming <- event.String()
 		default:
 			channame := event.Clique()
-			//TODO trap illegal filename characters
 			root.channel(channame).incoming <- event.String()
 		}
 	}
+}
+
+func fsName(ircName string) string {
+	return strings.Replace(ircName, "/", "␣", -1)
+}
+
+func (root *IrcFsRoot) InChannel(name string) bool {
+	key := strings.ToUpper(name)
+	_, ok := root.chans[key]
+	return ok
 }
 
 func (root *IrcFsRoot) channel(name string) *IrcFsChan {
@@ -347,6 +356,15 @@ func (root *IrcFsRoot) channel(name string) *IrcFsChan {
 		c.Add(root.dir)
 		go c.chanDispatch()
 		root.chans[key] = c
+	}
+	return c
+}
+
+func (root *IrcFsRoot) rmChannel(name string) *IrcFsChan {
+	key := strings.ToUpper(name)
+	c, ok := root.chans[key]
+	if ok {
+		delete(root.chans, key)
 	}
 	return c
 }
@@ -363,6 +381,11 @@ func (c *IrcFsChan) chanDispatch() {
 			if aux.lines != nil {
 				aux.lines <- msg
 			}
+		}
+	}
+	for _, aux := range(c.data.rdaux) {
+		if aux.lines != nil {
+			close(aux.lines)
 		}
 	}
 }
@@ -417,6 +440,7 @@ func wrRootCtl(line string) error {
 			root.messages = make(chan irc.Event)
 			go root.dispatch()
 			root.irc = irc.InitConn(conn, root.state.nick, nil, root.messages)
+			/* TODO rejoin any open channels */
 			/* TODO on disconnect, close(root.messages) and set root.irc = nil */
 			return nil
 		}
@@ -427,7 +451,10 @@ func wrRootCtl(line string) error {
 			if root.irc == nil {
 				return Edisconnected
 			}
-			root.irc.Join(cmd[1])
+			if !root.InChannel(cmd[1]) {
+				root.channel(cmd[1]) /* creates dir */
+				root.irc.Join(cmd[1])
+			}
 			return nil
 		case "server":
 			root.state.host = cmd[1]
@@ -500,9 +527,27 @@ func rdRootPong() *ReadAux {
 	return NewReadAux("", nil)
 }
 
-func wrChanCtlFn(channel string) WriteLineFn { /* TODO */
+func wrChanCtlFn(channel string) WriteLineFn {
 	return func(line string) error {
-		return nil
+		if len(line) == 0 || line[0] == '#' {
+			return nil
+		}
+		cmd := strings.Fields(line)
+		switch len(cmd) {
+		case 0:
+			return nil /* ignore empty lines */
+		case 1:
+			switch cmd[0] {
+			case "part":
+				ircChan := root.rmChannel(channel)
+				if root.irc != nil {
+					root.irc.Part(channel)
+				}
+				close(ircChan.incoming)
+				return nil
+			}
+		}
+		return Einval
 	}
 }
 
