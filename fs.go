@@ -467,9 +467,9 @@ func wrRootCtl(line string) error {
 			return nil
 		case "ssl":
 			switch cmd[1] {
-			case "on", "yes":
+			case "on", "yes", "true":
 				root.state.ssl = true
-			case "off", "no":
+			case "off", "no", "false":
 				root.state.ssl = false
 			default:
 				return Einval
@@ -491,26 +491,20 @@ func wrRootCtl(line string) error {
 	return Einval
 }
 
+func ctlStateString(cond bool, format string, args ...interface{}) string {
+	if !cond {
+		format = "#" + format
+	}
+	return fmt.Sprintf(format + "\n", args...)
+}
+
 func rdRootCtl() *ReadAux {
 	var buf string
-	if len(root.state.host) == 0 {
-		buf += "#"
-	}
-	buf += fmt.Sprintf("server %s\n", root.state.host)
-	if root.state.port == 0 {
-		buf += "#"
-	}
-	buf += fmt.Sprintf("port %d\n", root.state.port)
-	if root.state.ssl {
-		buf += "ssl on\n"
-	} else {
-		buf += "#ssl off\n"
-	}
-	if len(root.logger.dir) == 0 {
-		buf += "#"
-	}
-	buf += fmt.Sprintf("logdir %s\n", root.logger.dir)
-	buf += fmt.Sprintf("nick %s\n", root.state.nick)
+	buf += ctlStateString(len(root.state.host) != 0, "server %s", root.state.host)
+	buf += ctlStateString(root.state.port != 0, "port %d", root.state.port)
+	buf += ctlStateString(root.state.ssl, "ssl %t", root.state.ssl)
+	buf += ctlStateString(len(root.logger.dir) != 0, "logdir %s", root.logger.dir)
+	buf += ctlStateString(len(root.state.nick) != 0, "nick %s", root.state.nick)
 	return NewReadAux(buf, nil)
 }
 
