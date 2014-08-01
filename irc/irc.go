@@ -185,6 +185,12 @@ func (irc *Conn) broadcaster() {
 			listener <- content
 		}
 	}
+	for listener, ok := range irc.listeners {
+		if ok {
+			close(listener)
+		}
+	}
+	close(irc.send)
 }
 
 func readlines(input io.Reader, lines chan string) {

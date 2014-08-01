@@ -199,6 +199,7 @@ type IrcFsRoot struct {
 		port int
 		ssl bool
 		nick string /* nick requested by user */
+		conn bool /* true if a connection is active or pending */
 	}
 
 	dir *srv.File
@@ -336,6 +337,8 @@ func (root *IrcFsRoot) dispatch() {
 			root.channel(channame).incoming <- event.String()
 		}
 	}
+	root.state.conn = false
+	root.irc = nil
 }
 
 func fsName(ircName string) string {
@@ -430,30 +433,32 @@ func wrRootCtl(line string) error {
 		/* commands with no arguments */
 		switch cmd[0] {
 		case "connect":
-			if root.irc != nil {
+			if root.irc != nil || root.state.conn {
 				return Econnected
 			}
+			root.state.conn = true
 			conn, err := root.dial()
 			if err != nil {
+				root.state.conn = false
 				return err
 			}
 			root.messages = make(chan irc.Event)
 			go root.dispatch()
 			root.irc = irc.InitConn(conn, root.state.nick, nil, root.messages)
 			/* TODO rejoin any open channels */
-			/* TODO on disconnect, close(root.messages) and set root.irc = nil */
 			return nil
 		}
 	case 2:
 		/* commands with one argument */
 		switch cmd[0] {
 		case "join":
-			if root.irc == nil {
+			irc := root.irc
+			if irc == nil {
 				return Edisconnected
 			}
 			if !root.InChannel(cmd[1]) {
 				root.channel(cmd[1]) /* creates dir */
-				root.irc.Join(cmd[1])
+				irc.Join(cmd[1])
 			}
 			return nil
 		case "server":
@@ -534,7 +539,8 @@ func wrChanCtlFn(channel string) WriteLineFn {
 			switch cmd[0] {
 			case "part":
 				ircChan := root.rmChannel(channel)
-				if root.irc != nil {
+				irc := root.irc
+				if irc != nil {
 					root.irc.Part(channel)
 				}
 				close(ircChan.incoming)
@@ -549,7 +555,7 @@ func wrChanDataFn(channel string) WriteLineFn {
 	return func(line string) error {
 		irc := root.irc
 		if irc == nil {
-			return errors.New("not connected")
+			return Edisconnected
 		}
 		irc.PrivMsg(channel, line)
 		return nil
