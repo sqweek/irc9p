@@ -445,7 +445,13 @@ func wrRootCtl(line string) error {
 			root.messages = make(chan irc.Event)
 			go root.dispatch()
 			root.irc = irc.InitConn(conn, root.state.nick, nil, root.messages)
-			/* TODO rejoin any open channels */
+			irc := root.irc
+			if irc == nil {
+				return nil
+			}
+			for _, ircChan := range root.chans {
+				irc.Join(ircChan.name)
+			}
 			return nil
 		}
 	case 2:
