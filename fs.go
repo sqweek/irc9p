@@ -452,13 +452,12 @@ func wrRootCtl(line string) error {
 		/* commands with one argument */
 		switch cmd[0] {
 		case "join":
-			irc := root.irc
-			if irc == nil {
-				return Edisconnected
-			}
 			if !root.InChannel(cmd[1]) {
 				root.channel(cmd[1]) /* creates dir */
-				irc.Join(cmd[1])
+			}
+			irc := root.irc
+			if irc != nil {
+				irc.Join(cmd[1]) // ignore any disconnected error
 			}
 			return nil
 		case "server":
@@ -541,7 +540,8 @@ func wrChanCtlFn(channel string) WriteLineFn {
 				ircChan := root.rmChannel(channel)
 				irc := root.irc
 				if irc != nil {
-					root.irc.Part(channel)
+					// ignore error from Part; just means we're disconnected
+					irc.Part(channel)
 				}
 				close(ircChan.incoming)
 				return nil
@@ -557,7 +557,10 @@ func wrChanDataFn(channel string) WriteLineFn {
 		if irc == nil {
 			return Edisconnected
 		}
-		irc.PrivMsg(channel, line)
+		err := irc.PrivMsg(channel, line)
+		if err != nil {
+			return err
+		}
 		return nil
 	}
 }

@@ -6,14 +6,18 @@ import (
 	"strings"
 	"errors"
 	"bufio"
+	"sync"
 	"fmt"
 	"log"
 	"io"
 )
 
+var Edisconnected = errors.New("not connected")
+
 type Conn struct {
-	send chan string
-	conn io.ReadWriter
+	sendchan chan string
+	sendLock sync.Mutex
+	conn io.ReadWriteCloser
 	nick string // the actual nick; may be different from requested nick
 
 	broadcast chan Event
@@ -133,8 +137,8 @@ func LooksLikeServer(src string) bool {
 	return len(src) == 0 || strings.Contains(src, ".")
 }
 
-func InitConn(conn io.ReadWriter, nick string, pass *string, listeners ...chan Event) *Conn {
-	irc := Conn{send: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
+func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...chan Event) *Conn {
+	irc := Conn{sendchan: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
 	irc.tmp.names = make(map[string] []string)
 	for _, listener := range listeners {
 		irc.Listen(listener)
@@ -145,31 +149,38 @@ func InitConn(conn io.ReadWriter, nick string, pass *string, listeners ...chan E
 	go irc.broadcaster()
 	go irc.sender()
 	if pass != nil {
-		irc.send <- fmt.Sprintf("PASS %s\r\n", *pass)
+		irc.send("PASS %s", *pass)
 	}
 	if len(nick) == 0 {
 		nick = "irc9p-guest"
 	}
-	irc.send <- fmt.Sprintf("NICK %s\r\n", nick)
+	irc.send("NICK %s", nick)
 	irc.nick = nick
-	irc.send <- fmt.Sprintf("USER %s 0 0 :%s\r\n", nick, nick)
+	irc.send("USER %s 0 0 :%s", nick, nick)
 	return &irc
 }
 
-func (irc *Conn) PrivMsg(channel, msg string) {
-	irc.send <- fmt.Sprintf("PRIVMSG %s :%s\r\n", channel, msg)
-	irc.broadcast <- &PrivMsgEvent{Clq{channel}, irc.nick, msg}
-}
-
-func (irc *Conn) Join(channel string) {
-	irc.send <- fmt.Sprintf("JOIN %s\r\n", channel)
-}
-
-func (irc *Conn) Part(channel string) {
-	if !LooksLikeChannel(channel) {
-		return
+func (irc *Conn) PrivMsg(channel, msg string) error {
+	err := irc.send("PRIVMSG %s :%s\r\n", channel, msg)
+	if err != nil {
+		return err
 	}
-	irc.send <- fmt.Sprintf("PART %s\r\n", channel)
+	irc.broadcast <- &PrivMsgEvent{Clq{channel}, irc.nick, msg}
+	return nil
+}
+
+func (irc *Conn) Join(channel string) error {
+	if !LooksLikeChannel(channel) {
+		return nil
+	}
+	return irc.send("JOIN %s\r\n", channel)
+}
+
+func (irc *Conn) Part(channel string) error {
+	if !LooksLikeChannel(channel) {
+		return nil
+	}
+	return irc.send("PART %s\r\n", channel)
 }
 
 func (irc *Conn) Listen(listener chan Event) {
@@ -190,7 +201,11 @@ func (irc *Conn) broadcaster() {
 			close(listener)
 		}
 	}
-	close(irc.send)
+	irc.sendLock.Lock()
+	close(irc.sendchan)
+	irc.sendchan = nil
+	irc.sendLock.Unlock()
+	irc.conn.Close()
 }
 
 func readlines(input io.Reader, lines chan string) {
@@ -333,7 +348,7 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 		}
 		return &NoticeEvent{ev}, nil
 	case "PING":
-		irc.send <- fmt.Sprintf("PONG :\r\n")
+		irc.send("PONG :")
 		return nil, nil
 	case "JOIN":
 		if len(cmd.params) < 1 {
@@ -356,8 +371,19 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 	return nil, Eunsupp
 }
 
+func (irc *Conn) send(format string, args ...interface{}) error {
+	irc.sendLock.Lock()
+	defer irc.sendLock.Unlock()
+	if irc.send != nil {
+		irc.sendchan <- fmt.Sprintf(format + "\r\n", args...)
+	} else {
+		return Edisconnected
+	}
+	return nil
+}
+
 func (irc *Conn) sender() {
-	for line := range irc.send {
+	for line := range irc.sendchan {
 		irc.conn.Write([]byte(line))
 	}
 }
