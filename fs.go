@@ -37,10 +37,25 @@ type LineFile struct {
 type ReadAux struct {
 	buf *bytes.Buffer
 	lines chan string
+	missed int
 }
 
-func NewReadAux(data string, lines chan string) *ReadAux {
-	return &ReadAux{bytes.NewBufferString(data), lines}
+func (aux *ReadAux) Send(line string) bool {
+	select {
+	case aux.lines <- line:
+		return true
+	default:
+		aux.missed++
+		return false
+	}
+}
+
+func NewReadAux(data string, useChan bool) *ReadAux {
+	aux := ReadAux{buf: bytes.NewBufferString(data)}
+	if useChan {
+		aux.lines = make(chan string, 10)
+	}
+	return &aux
 }
 
 type WriteLineFn func(string) error
@@ -106,7 +121,12 @@ func (f *LineFile) Read(fid *srv.FFid, data []byte, offset uint64) (int, error) 
 	line, ok := <-rdaux.lines
 	if !ok {
 		return n, nil
-	} else if n + len(line) + 1 > len(data) {
+	}
+	if rdaux.missed != 0 {
+		line = line + fmt.Sprintf("\n<%d lines suppressed>", rdaux.missed)
+		rdaux.missed = 0
+	}
+	if n + len(line) + 1 > len(data) {
 		rdaux.buf.WriteString(line)
 		rdaux.buf.Write([]byte{'\n'})
 		n2, _ := rdaux.buf.Read(data[n:])
@@ -386,7 +406,7 @@ func (c *IrcFsChan) chanDispatch() {
 		msg = fmt.Sprintf("%s %s", tstamp, msg)
 		for _, aux := range(c.data.rdaux) {
 			if aux.lines != nil {
-				aux.lines <- msg
+				aux.Send(msg)
 			}
 		}
 	}
@@ -401,7 +421,7 @@ func (root *IrcFsRoot) event(format string, args ...interface{}) {
 	ev := fmt.Sprintf(format, args...)
 	for _, aux := range(root.evfile.rdaux) {
 		if aux.lines != nil {
-			aux.lines <- ev
+			aux.Send(ev)
 		}
 	}
 }
@@ -531,7 +551,7 @@ func rdRootCtl() *ReadAux {
 	buf += ctlStateString(root.state.ssl, "ssl %t", root.state.ssl)
 	buf += ctlStateString(len(root.logger.dir) != 0, "logdir %s", root.logger.dir)
 	buf += ctlStateString(len(root.state.nick) != 0, "nick %s", root.state.nick)
-	return NewReadAux(buf, nil)
+	return NewReadAux(buf, false)
 }
 
 func rdRootEvent() *ReadAux {
@@ -547,16 +567,16 @@ func rdRootEvent() *ReadAux {
 	for _, c := range root.chans {
 		buf += "join " + fsName(c.name) + "\n"
 	}
-	return NewReadAux(buf, make(chan string))
+	return NewReadAux(buf, true)
 }
 
 func rdRootNick() *ReadAux {
 	/* FIXME should reflect actual nick */
-	return NewReadAux(root.state.nick, nil)
+	return NewReadAux(root.state.nick, false)
 }
 
 func rdRootPong() *ReadAux {
-	return NewReadAux("", nil)
+	return NewReadAux("", false)
 }
 
 func wrChanCtlFn(channel string) WriteLineFn {
@@ -601,13 +621,13 @@ func wrChanDataFn(channel string) WriteLineFn {
 
 func rdChanDataFn(channel string) ReadInitFn {
 	return func() *ReadAux {
-		return NewReadAux("", make(chan string))
+		return NewReadAux("", true)
 	}
 }
 
 func rdChanUsersFn(channel string) ReadInitFn {
 	return func() *ReadAux {
-		return NewReadAux(strings.Join(root.channel(channel).users, "\n") + "\n", nil)
+		return NewReadAux(strings.Join(root.channel(channel).users, "\n") + "\n", false)
 	}
 }
 
