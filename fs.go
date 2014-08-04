@@ -369,6 +369,7 @@ func (root *IrcFsRoot) rmChannel(name string) *IrcFsChan {
 	key := strings.ToUpper(name)
 	c, ok := root.chans[key]
 	if ok {
+		c.dir.Remove()
 		delete(root.chans, key)
 		root.event("part %s", fsName(c.name))
 	}
