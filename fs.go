@@ -204,7 +204,7 @@ type IrcFsRoot struct {
 
 	dir *srv.File
 	ctl *LineFile
-	event *LineFile
+	evfile *LineFile
 	nick *LineFile
 	pong *LineFile
 }
@@ -339,6 +339,7 @@ func (root *IrcFsRoot) dispatch() {
 	}
 	root.state.conn = false
 	root.irc = nil
+	root.event("disconnected")
 }
 
 func fsName(ircName string) string {
@@ -357,6 +358,7 @@ func (root *IrcFsRoot) channel(name string) *IrcFsChan {
 	if !ok {
 		c = newFsChan(name)
 		c.Add(root.dir)
+		root.event("join %s", fsName(name))
 		go c.chanDispatch()
 		root.chans[key] = c
 	}
@@ -368,6 +370,7 @@ func (root *IrcFsRoot) rmChannel(name string) *IrcFsChan {
 	c, ok := root.chans[key]
 	if ok {
 		delete(root.chans, key)
+		root.event("part %s", fsName(c.name))
 	}
 	return c
 }
@@ -393,6 +396,15 @@ func (c *IrcFsChan) chanDispatch() {
 	}
 }
 
+func (root *IrcFsRoot) event(format string, args ...interface{}) {
+	ev := fmt.Sprintf(format, args...)
+	for _, aux := range(root.evfile.rdaux) {
+		if aux.lines != nil {
+			aux.lines <- ev
+		}
+	}
+}
+
 func (root *IrcFsRoot) dial() (net.Conn, error) {
 	if len(root.state.host) == 0 {
 		return nil, errors.New("no server specified")
@@ -406,11 +418,13 @@ func (root *IrcFsRoot) dial() (net.Conn, error) {
 		}
 	}
 	addr := fmt.Sprintf("%s:%d", root.state.host, port)
+	root.event("dial %s", addr)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 	if root.state.ssl {
+		// TODO check certificate
 		conf := tls.Config{InsecureSkipVerify: true}
 		return tls.Client(conn, &conf), nil
 	}
@@ -449,6 +463,7 @@ func wrRootCtl(line string) error {
 			if irc == nil {
 				return nil
 			}
+			root.event("connected")
 			for _, ircChan := range root.chans {
 				irc.Join(ircChan.name)
 			}
@@ -518,8 +533,20 @@ func rdRootCtl() *ReadAux {
 	return NewReadAux(buf, nil)
 }
 
-func rdRootEvent() *ReadAux { /* TODO */
-	return NewReadAux("", nil)
+func rdRootEvent() *ReadAux {
+	var buf string
+	switch {
+	case root.irc != nil:
+		buf += "connected\n"
+	case root.state.conn:
+		buf += "dialling\n"
+	default:
+		buf += "disconnected\n"
+	}
+	for _, c := range root.chans {
+		buf += "join " + fsName(c.name) + "\n"
+	}
+	return NewReadAux(buf, make(chan string))
 }
 
 func rdRootNick() *ReadAux {
@@ -591,7 +618,7 @@ func main() {
 	root.messages = make(chan irc.Event)
 	root.chans = make(map[string] *IrcFsChan)
 	root.ctl = newLineFile("ctl", 0666, rdRootCtl, wrRootCtl)
-	root.event = newLineFile("event", 0444, rdRootEvent, nil)
+	root.evfile = newLineFile("event", 0444, rdRootEvent, nil)
 	root.nick = newLineFile("nick", 0444, rdRootNick, nil)
 	root.pong = newLineFile("pong", 0444, rdRootPong, nil)
 	root.logger.fd = make(map[string] io.WriteCloser)
@@ -599,7 +626,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = add(root.dir, root.ctl, root.event, root.nick, root.pong)
+	err = add(root.dir, root.ctl, root.evfile, root.nick, root.pong)
 	if err != nil {
 		panic(err)
 	}
