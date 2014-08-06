@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/sqweek/irc9p/irc"
+	"github.com/sqweek/p9p-util/p9p"
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
 	"crypto/tls"
@@ -14,8 +15,6 @@ import (
 	"log"
 	"net"
 	"sort"
-	"os/signal"
-	"syscall"
 	"os"
 	"io"
 )
@@ -498,22 +497,16 @@ func main() {
 
 	s := srv.NewFileSrv(root.dir)
 	s.Dotu = false
-	s.Debuglevel = srv.DbgPrintFcalls
+	//s.Debuglevel = srv.DbgPrintFcalls
 	if !s.Start(s) {
 		log.Fatal("Fsrv.Start failed")
 	}
-	listener, err := net.Listen("unix", "/tmp/ns.sqweek.:0/irc")
+	listener, err := p9p.ListenSrv("irc")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer listener.Close()
-	sigchan := make(chan os.Signal)
-	go func() {
-		<-sigchan
-		listener.Close()
-		os.Exit(1)
-	}()
-	signal.Notify(sigchan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	p9p.CloseOnSignal(listener)
 
 	err = s.StartListener(listener)
 	if err != nil {
