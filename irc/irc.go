@@ -374,7 +374,7 @@ func (irc *Conn) newEvent(cmd *ircCmd) (Event, error) {
 func (irc *Conn) send(format string, args ...interface{}) error {
 	irc.sendLock.Lock()
 	defer irc.sendLock.Unlock()
-	if irc.send != nil {
+	if irc.sendchan != nil {
 		irc.sendchan <- fmt.Sprintf(format + "\r\n", args...)
 	} else {
 		return Edisconnected
