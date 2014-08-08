@@ -40,8 +40,8 @@ func (aux *ReadAux) Send(line string) bool {
 		return true
 	default:
 		aux.missed++
-		return false
 	}
+	return false
 }
 
 func NewReadAux(data string, useChan bool) *ReadAux {
@@ -118,10 +118,9 @@ func (f *LineFile) Read(fid *srv.FFid, data []byte, offset uint64) (int, error) 
 		rdaux.buf.Write([]byte{'\n'})
 		n2, _ := rdaux.buf.Read(data[n:])
 		return n + n2, nil
-	} else {
-		n2 := copy(data[n:], line + "\n")
-		return n + n2, nil
 	}
+	n2 := copy(data[n:], line + "\n")
+	return n + n2, nil
 }
 
 func (f *LineFile) Write(fid *srv.FFid, data []byte, offset uint64) (int, error) {
@@ -161,5 +160,6 @@ func dowrite(buf *bytes.Buffer, callback func(string) error, eof bool) error {
 			return err
 		}
 	}
+	return nil
 }
 
