@@ -98,9 +98,7 @@ func (f *LineFile) Read(fid *srv.FFid, data []byte, offset uint64) (int, error) 
 	/* fill from existing buffer before blocking */
 	if rdaux.buf.Len() > 0 {
 		n, _ = rdaux.buf.Read(data)
-		if n == len(data) {
-			return n, nil
-		}
+		return n, nil
 	}
 	if rdaux.lines == nil {
 		return n, nil
