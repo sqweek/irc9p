@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"errors"
 	"time"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -479,7 +480,15 @@ func rdChanUsersFn(channel string) ReadInitFn {
 	}
 }
 
+var addr = flag.String("addr", "irc", "service name or dial string to announce as")
+
 func main() {
+	flag.StringVar(&root.state.host, "host", "", "irc server host")
+	flag.IntVar(&root.state.port, "port", 0, "irc server port")
+	flag.BoolVar(&root.state.ssl, "ssl", false, "use ssl")
+	flag.StringVar(&root.state.nick, "nick", "", "irc nickname")
+	flag.StringVar(&root.logger.dir, "logdir", "", "log channel activity here")
+	flag.Parse()
 	uid = p.OsUsers.Uid2User(os.Geteuid())
 	gid = p.OsUsers.Gid2Group(os.Getegid())
 	log.Println(uid, gid)
@@ -506,7 +515,7 @@ func main() {
 	if !s.Start(s) {
 		log.Fatal("Fsrv.Start failed")
 	}
-	listener, err := p9p.ListenSrv("irc")
+	listener, err := p9p.ListenSrv(*addr)
 	if err != nil {
 		log.Fatal(err)
 	}
