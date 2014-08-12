@@ -160,6 +160,10 @@ func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...c
 	return &irc
 }
 
+func (irc *Conn) Disconnect() {
+	irc.conn.Close()
+}
+
 func (irc *Conn) PrivMsg(channel, msg string) error {
 	err := irc.send("PRIVMSG %s :%s\r\n", channel, msg)
 	if err != nil {

@@ -332,6 +332,11 @@ func wrRootCtl(line string) error {
 				irc.Join(ircChan.name)
 			}
 			return nil
+		case "disconnect":
+			if root.irc == nil {
+				return Edisconnected
+			}
+			root.irc.Disconnect()
 		}
 	case 2:
 		/* commands with one argument */
