@@ -37,6 +37,12 @@ type IrcLogger struct {
 func (logger *IrcLogger) Log(channel, content string) {
 	var err error
 	tstamp := time.Now().In(time.UTC).Format("2006-01-02 15:04:05")
+	for _, aux := range root.data.rdaux {
+		aux.Send(fmt.Sprintf("%s  %s  %s", tstamp, channel, content))
+	}
+	if len(logger.dir) == 0 {
+		return
+	}
 	fd, ok := logger.fd[channel]
 	if !ok {
 		fd, err = os.OpenFile(logger.dir + "/" + channel + ".log", os.O_WRONLY | os.O_APPEND | os.O_CREATE, 0644)
@@ -75,6 +81,7 @@ type IrcFsRoot struct {
 	dir *srv.File
 	ctl *LineFile
 	evfile *LineFile
+	data *LineFile
 	nick *LineFile
 	pong *LineFile
 }
@@ -247,9 +254,7 @@ func (root *IrcFsRoot) rmChannel(name string) *IrcFsChan {
 func (c *IrcFsChan) chanDispatch() {
 	for msg := range c.incoming {
 		tstamp := time.Now().Format("15:04:05")
-		if len(root.logger.dir) > 0 {
-			root.logger.Log(c.name, msg)
-		}
+		root.logger.Log(c.name, msg)
 		log.Println(c.name, msg)
 		msg = fmt.Sprintf("%s %s", tstamp, msg)
 		for _, aux := range(c.data.rdaux) {
@@ -419,6 +424,10 @@ func rdRootEvent() *ReadAux {
 	return NewReadAux(buf, true)
 }
 
+func rdRootLog() *ReadAux {
+	return NewReadAux("", true)
+}
+
 func rdRootNick() *ReadAux {
 	/* FIXME should reflect actual nick */
 	return NewReadAux(root.state.nick, false)
@@ -497,6 +506,7 @@ func main() {
 	root.chans = make(map[string] *IrcFsChan)
 	root.ctl = newLineFile("ctl", 0666, rdRootCtl, wrRootCtl)
 	root.evfile = newLineFile("event", 0444, rdRootEvent, nil)
+	root.data = newLineFile("data", 0444, rdRootLog, nil)
 	root.nick = newLineFile("nick", 0444, rdRootNick, nil)
 	root.pong = newLineFile("pong", 0444, rdRootPong, nil)
 	root.logger.fd = make(map[string] io.WriteCloser)
@@ -504,7 +514,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	err = add(root.dir, root.ctl, root.evfile, root.nick, root.pong)
+	err = add(root.dir, root.ctl, root.evfile, root.data, root.nick, root.pong)
 	if err != nil {
 		panic(err)
 	}
