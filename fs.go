@@ -99,7 +99,7 @@ type IrcFsChan struct {
 
 func (c *IrcFsChan) HasNick(nick string) bool {
 	i := sort.SearchStrings(c.users, nick)
-	return i == len(c.users) || c.users[i] == nick
+	return i != len(c.users) && c.users[i] == nick
 }
 
 func (c *IrcFsChan) Joined(nick string) {
