@@ -343,6 +343,7 @@ func wrRootCtl(line string) error {
 				return Edisconnected
 			}
 			root.irc.Disconnect()
+			return nil
 		}
 	case 2:
 		/* commands with one argument */
