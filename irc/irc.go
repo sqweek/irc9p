@@ -7,6 +7,7 @@ import (
 	"errors"
 	"bufio"
 	"sync"
+	"time"
 	"fmt"
 	"log"
 	"io"
@@ -22,6 +23,8 @@ type Conn struct {
 
 	broadcast chan Event
 	listeners map[chan Event] bool
+
+	activity chan time.Time // updated every recv from server
 
 	tmp struct {
 		names map[string] []string
@@ -140,11 +143,13 @@ func LooksLikeServer(src string) bool {
 func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...chan Event) *Conn {
 	irc := Conn{sendchan: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
 	irc.tmp.names = make(map[string] []string)
+	irc.activity = make(chan time.Time)
 	for _, listener := range listeners {
 		irc.Listen(listener)
 	}
 	lines := make(chan string)
 	go readlines(irc.conn, lines)
+	go irc.heartbeat()
 	go irc.parser(lines)
 	go irc.broadcaster()
 	go irc.sender()
@@ -189,6 +194,20 @@ func (irc *Conn) Part(channel string) error {
 
 func (irc *Conn) Listen(listener chan Event) {
 	irc.listeners[listener] = true
+}
+
+func (irc *Conn) heartbeat() {
+	idleTime := 5 * time.Minute
+	timer := time.NewTimer(idleTime)
+	for {
+		select {
+		case <-irc.activity:
+			timer.Reset(idleTime)
+		case <-timer.C:
+			log.Println(idleTime, "of silence from IRC server, assuming connection is broke")
+			irc.Disconnect()
+		}
+	}
 }
 
 func (irc *Conn) broadcaster() {
@@ -274,6 +293,7 @@ func parseCmd(line string) (*ircCmd, error) {
 func (irc *Conn) parser(lines chan string) {
 	defer close(irc.broadcast)
 	for line := range lines {
+		irc.activity <- time.Now()
 		cmd, err := parseCmd(line)
 		if err != nil {
 			log.Printf("%v: %s\n", err, line)
