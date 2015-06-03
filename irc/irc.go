@@ -170,7 +170,7 @@ func (irc *Conn) Disconnect() {
 }
 
 func (irc *Conn) PrivMsg(channel, msg string) error {
-	err := irc.send("PRIVMSG %s :%s\r\n", channel, msg)
+	err := irc.send("PRIVMSG %s :%s", channel, msg)
 	if err != nil {
 		return err
 	}
@@ -182,14 +182,14 @@ func (irc *Conn) Join(channel string) error {
 	if !LooksLikeChannel(channel) {
 		return nil
 	}
-	return irc.send("JOIN %s\r\n", channel)
+	return irc.send("JOIN %s", channel)
 }
 
 func (irc *Conn) Part(channel string) error {
 	if !LooksLikeChannel(channel) {
 		return nil
 	}
-	return irc.send("PART %s\r\n", channel)
+	return irc.send("PART %s", channel)
 }
 
 func (irc *Conn) Listen(listener chan Event) {
