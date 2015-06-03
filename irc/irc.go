@@ -45,6 +45,10 @@ type Clq struct {
 }
 func (e *Clq) Clique() string { return e.clique }
 
+type LostContactEvent struct {}
+func (e *LostContactEvent) Clique() string { return "" }
+func (e *LostContactEvent) String() string { return "lost contact with IRC server" }
+
 type ServerEvent struct {
 	src string
 	cmd string
@@ -166,7 +170,11 @@ func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...c
 }
 
 func (irc *Conn) Disconnect() {
-	irc.conn.Close()
+	conn := irc.conn
+	if conn != nil {
+		conn.Close()
+	}
+	irc.conn = nil
 }
 
 func (irc *Conn) PrivMsg(channel, msg string) error {
@@ -204,8 +212,12 @@ func (irc *Conn) heartbeat() {
 		case <-irc.activity:
 			timer.Reset(idleTime)
 		case <-timer.C:
-			log.Println(idleTime, "of silence from IRC server, assuming connection is broke")
-			irc.Disconnect()
+			if irc.conn != nil {
+				log.Println(idleTime, "of silence from IRC server, assuming connection is broke")
+				irc.broadcast <- &LostContactEvent{}
+				irc.Disconnect()
+			}
+			return
 		}
 	}
 }
@@ -228,7 +240,7 @@ func (irc *Conn) broadcaster() {
 	close(irc.sendchan)
 	irc.sendchan = nil
 	irc.sendLock.Unlock()
-	irc.conn.Close()
+	irc.Disconnect()
 }
 
 func readlines(input io.Reader, lines chan string) {

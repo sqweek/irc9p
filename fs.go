@@ -64,7 +64,10 @@ func (logger *IrcLogger) Close(channel string) {
 }
 
 type IrcFsRoot struct {
-	irc *irc.Conn
+	irc *irc.Conn // managed by dialler func
+	Connect chan chan error
+	Disconnect chan chan bool
+
 	messages chan irc.Event
 	chans map[string] *IrcFsChan
 
@@ -175,8 +178,11 @@ func newFsChan(channel string) *IrcFsChan {
 }
 
 func (root *IrcFsRoot) dispatch() {
+	timedout := false
 	for event := range root.messages {
 		switch event := event.(type) {
+		case *irc.LostContactEvent:
+			timedout = true
 		case *irc.ServerEvent, *irc.ServerMsgEvent:
 			log.Println("server msg:", event)
 		case *irc.NamesEvent:
@@ -212,9 +218,23 @@ func (root *IrcFsRoot) dispatch() {
 			root.channel(channame).incoming <- event.String()
 		}
 	}
-	root.state.conn = false
-	root.irc = nil
+	req := make(chan bool)
+	root.Disconnect <-req
+	<-req
 	root.event("disconnected")
+	if timedout {
+		go func() {
+			for {
+				req := make(chan error)
+				root.Connect <-req
+				err := <-req
+				if err == nil {
+					return
+				}
+				time.Sleep(30*time.Second)
+			}
+		}()
+	}
 }
 
 func fsName(ircName string) string {
@@ -305,6 +325,43 @@ func (root *IrcFsRoot) dial() (net.Conn, error) {
 	return conn, nil
 }
 
+func dialler(root *IrcFsRoot) {
+	for {
+		select {
+		case req := <-root.Disconnect:
+			root.state.conn = false
+			if root.irc != nil {
+				root.irc.Disconnect()
+				root.irc = nil
+				req <- true
+			} else {
+				req <- false
+			}
+		case req := <-root.Connect:
+			root.state.conn = true
+			if root.irc != nil {
+				req <- nil
+				continue
+			}
+			conn, err := root.dial()
+			if err != nil {
+				root.state.conn = false
+				req <- err
+			} else {
+				root.messages = make(chan irc.Event)
+				go root.dispatch()
+				iconn := irc.InitConn(conn, root.state.nick, nil, root.messages)
+				root.irc = iconn
+				root.event("connected")
+				for _, ircChan := range root.chans {
+					iconn.Join(ircChan.name)
+				}
+				req <- nil
+			}
+		}
+	}
+}
+
 func wrRootCtl(line string) error {
 	if len(line) == 0 || line[0] == '#' {
 		return nil
@@ -320,29 +377,19 @@ func wrRootCtl(line string) error {
 			if root.irc != nil || root.state.conn {
 				return Econnected
 			}
-			root.state.conn = true
-			conn, err := root.dial()
+			req := make(chan error)
+			root.Connect <-req
+			err := <-req
 			if err != nil {
-				root.state.conn = false
 				return err
-			}
-			root.messages = make(chan irc.Event)
-			go root.dispatch()
-			root.irc = irc.InitConn(conn, root.state.nick, nil, root.messages)
-			irc := root.irc
-			if irc == nil {
-				return nil
-			}
-			root.event("connected")
-			for _, ircChan := range root.chans {
-				irc.Join(ircChan.name)
 			}
 			return nil
 		case "disconnect":
-			if root.irc == nil {
+			req := make(chan bool)
+			root.Disconnect <-req
+			if !<-req {
 				return Edisconnected
 			}
-			root.irc.Disconnect()
 			return nil
 		}
 	case 2:
@@ -401,6 +448,7 @@ func ctlStateString(cond bool, format string, args ...interface{}) string {
 
 func rdRootCtl() *ReadAux {
 	var buf string
+	buf += ctlStateString(true, "conn %s", dialState())
 	buf += ctlStateString(len(root.state.host) != 0, "server %s", root.state.host)
 	buf += ctlStateString(root.state.port != 0, "port %d", root.state.port)
 	buf += ctlStateString(root.state.ssl, "ssl %t", root.state.ssl)
@@ -409,16 +457,17 @@ func rdRootCtl() *ReadAux {
 	return NewReadAux(buf, false)
 }
 
-func rdRootEvent() *ReadAux {
-	var buf string
-	switch {
-	case root.irc != nil:
-		buf += "connected\n"
-	case root.state.conn:
-		buf += "dialling\n"
-	default:
-		buf += "disconnected\n"
+func dialState() string {
+	if root.irc != nil {
+		return "connected"
+	} else if root.state.conn {
+		return "dialling"
 	}
+	return "disconnected"
+}
+
+func rdRootEvent() *ReadAux {
+	buf := fmt.Sprintf("%s\n", dialState())
 	for _, c := range root.chans {
 		buf += "join " + fsName(c.name) + "\n"
 	}
@@ -504,6 +553,8 @@ func main() {
 	log.Println(uid, gid)
 	root.dir = new(srv.File)
 	root.messages = make(chan irc.Event)
+	root.Connect = make(chan chan error)
+	root.Disconnect = make(chan chan bool)
 	root.chans = make(map[string] *IrcFsChan)
 	root.ctl = newLineFile("ctl", 0666, rdRootCtl, wrRootCtl)
 	root.evfile = newLineFile("event", 0444, rdRootEvent, nil)
@@ -519,6 +570,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	go dialler(&root)
 
 	s := srv.NewFileSrv(root.dir)
 	s.Dotu = false
