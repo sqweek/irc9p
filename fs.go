@@ -79,6 +79,7 @@ type IrcFsRoot struct {
 		ssl bool
 		nick string /* nick requested by user */
 		conn bool /* true if a connection is active or pending */
+		password string
 	}
 
 	dir *srv.File
@@ -350,7 +351,7 @@ func dialler(root *IrcFsRoot) {
 			} else {
 				root.messages = make(chan irc.Event)
 				go root.dispatch()
-				iconn := irc.InitConn(conn, root.state.nick, nil, root.messages)
+				iconn := irc.InitConn(conn, root.state.nick, root.state.password, root.messages)
 				root.irc = iconn
 				root.event("connected")
 				for _, ircChan := range root.chans {
@@ -426,6 +427,9 @@ func wrRootCtl(line string) error {
 		case "nick":
 			root.state.nick = cmd[1]
 			return nil
+		case "pass":
+			root.state.password = cmd[1]
+			return nil
 		case "logdir":
 			/* confirm directory exists */
 			_, err := os.Stat(cmd[1])
@@ -454,6 +458,9 @@ func rdRootCtl() *ReadAux {
 	buf += ctlStateString(root.state.ssl, "ssl %t", root.state.ssl)
 	buf += ctlStateString(len(root.logger.dir) != 0, "logdir %s", root.logger.dir)
 	buf += ctlStateString(len(root.state.nick) != 0, "nick %s", root.state.nick)
+	if len(root.state.password) != 0 {
+		buf += "#pass ********"
+	}
 	return NewReadAux(buf, false)
 }
 

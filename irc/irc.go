@@ -144,7 +144,7 @@ func LooksLikeServer(src string) bool {
 	return len(src) == 0 || strings.Contains(src, ".")
 }
 
-func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...chan Event) *Conn {
+func InitConn(conn io.ReadWriteCloser, nick string, pass string, listeners ...chan Event) *Conn {
 	irc := Conn{sendchan: make(chan string), conn: conn, broadcast: make(chan Event), listeners: make(map[chan Event] bool)}
 	irc.tmp.names = make(map[string] []string)
 	irc.activity = make(chan time.Time)
@@ -157,8 +157,8 @@ func InitConn(conn io.ReadWriteCloser, nick string, pass *string, listeners ...c
 	go irc.parser(lines)
 	go irc.broadcaster()
 	go irc.sender()
-	if pass != nil {
-		irc.send("PASS %s", *pass)
+	if pass != "" {
+		irc.send("PASS %s", pass)
 	}
 	if len(nick) == 0 {
 		nick = "irc9p-guest"
