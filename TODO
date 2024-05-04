@@ -1,0 +1,7 @@
+* handle nick unavailable during connect
+* implement /pong
+* multiple irc connections?
+* handle too-many-files-open better while logging
+* trim op prefixes (@/+) from nicks in user list
+* no write error on #foo/data when disconnected?
+* spurious local echo when sending empty message
